@@ -4,10 +4,11 @@
 # glibc-based (not alpine/musl) to avoid Rollup/Vite native-binary issues.
 FROM node:20-slim AS assets
 WORKDIR /app
-COPY package.json package-lock.json vite.config.js tailwind.config.js postcss.config.js ./
-# `npm install` (not `npm ci`) so platform-specific native binaries (Rolldown/Vite)
-# are resolved for the build platform — the lockfile was generated on another OS
-# and `npm ci` won't fetch cross-platform optional deps (npm bug #4828).
+# NOTE: the committed package-lock.json is generated on Windows and only pins the
+# Windows native binaries. npm (bug #4828) then refuses to install the Linux
+# Rolldown/Vite binary on either `npm ci` or lockfile-based `npm install`. So we
+# deliberately DO NOT copy the lockfile here and let npm resolve fresh for Linux.
+COPY package.json vite.config.js tailwind.config.js postcss.config.js ./
 RUN npm install --no-audit --no-fund
 COPY resources ./resources
 # VITE_REVERB_* are baked in at build time; pass them as build args in production.
