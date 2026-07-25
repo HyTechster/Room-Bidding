@@ -7,9 +7,9 @@ database. Three moving parts run in production; a fourth (the scheduler) is a cr
 
 | Service | What it runs | Notes |
 |---|---|---|
-| **Web** (Render Web Service) | the Laravel app (HTTP + Livewire) | Serves pages and Livewire updates. |
-| **Reverb worker** (Render Background Worker) | `php artisan reverb:start` | Persistent WebSocket server for realtime bidding. Must be always-on. |
-| **Scheduler** (cron) | `php artisan schedule:run` every minute | Drives `sessions:expire` (daily). See below. |
+| **Web** (Render Web Service) | the Laravel app (HTTP + Livewire), FrankenPHP | Serves pages and Livewire updates. |
+| **Reverb** (Render Web Service) | `php artisan reverb:start` | Persistent WebSocket server; needs a public URL for `wss://`. Always-on. |
+| **Cron** (Render Cron Job) | `php artisan sessions:expire` (daily) | Lifecycle cleanup. |
 | **Database** | Neon Postgres | Reached via the connection string; pooler (6543) under load. |
 
 > Realtime degrades gracefully: if the Reverb worker is down, the UI still updates
@@ -41,24 +41,48 @@ Copy `.env.example` → `.env` and set:
   `SESSION_PRICE_CENTS`, `BILLING_CURRENCY=MYR`, `PAYMENT_PROVIDER=stub`.
 - `SESSION_DRIVER=database` (survives instance restarts — enables host resume).
 
-## Build & release
+## Render (Docker) setup
 
+Render has no native PHP runtime, so the app ships as a **Docker image**
+(`Dockerfile` at the repo root, FrankenPHP — a production server, not `artisan
+serve`). Build the front-end `VITE_REVERB_*` values in as build args.
+
+Create three Render services from the **same repo/image**:
+
+| Service | Type | Command | Notes |
+|---|---|---|---|
+| **web** | Web Service (Docker) | *(image default: FrankenPHP)* | Serves HTTP + Livewire. |
+| **reverb** | Web Service (Docker) | `php artisan reverb:start --host 0.0.0.0 --port $PORT` | Needs a public URL for `wss://`; point the web app's `REVERB_HOST` at it. |
+| **cron** | Cron Job (Docker) | `php artisan sessions:expire` | Schedule daily. |
+
+**Pre-Deploy Command** (on the web service — runs once per release, DB reachable):
 ```bash
-composer install --no-dev --optimize-autoloader
-npm ci && npm run build          # builds front-end incl. Echo (needs VITE_REVERB_* set)
-php artisan config:cache route:cache view:cache
+php artisan migrate --force && php artisan db:apply && php artisan config:cache && php artisan route:cache && php artisan view:cache
 ```
 
-### Database schema
-The domain schema is hand-authored SQL (R5). Apply once to Neon, in order:
+If you're not using Docker (an image that already has PHP + Node), the equivalent
+**Build Command** is:
+```bash
+composer install --no-dev --optimize-autoloader && npm ci && npm run build && php artisan config:cache && php artisan route:cache && php artisan view:cache
+```
+and the **Start Command** for web is the FrankenPHP/php-fpm server (avoid
+`php artisan serve` for real traffic).
+
+## Database schema
+
+Framework tables come from `artisan migrate`; the domain schema is hand-authored
+SQL in `db/migrations/*.sql` (R5), applied by a portable command that tracks what
+has run (`domain_migrations` table) so it's safe on every deploy:
 
 ```bash
-php artisan migrate --force                      # framework tables (users, sessions, cache, jobs)
-psql "$DATABASE_URL" -f db/migrations/001_init.sql
-psql "$DATABASE_URL" -f db/migrations/002_add_weight_fractions.sql
-# then any later db/migrations/NNN_*.sql in order
+php artisan migrate --force     # framework tables (users, sessions, cache, jobs)
+php artisan db:apply            # domain tables — applies only new db/migrations/*.sql
 ```
-Do **not** use `php artisan migrate` for the domain tables — they live only in `db/`.
+
+- On a database whose schema was already applied by hand, run
+  `php artisan db:apply --mark-only` **once** to record the existing files without
+  re-running them; afterwards plain `db:apply` only applies new ones.
+- Do **not** use `php artisan migrate` for the domain tables — they live only in `db/`.
 
 ## Reverb worker
 
@@ -73,18 +97,20 @@ reach the worker (typically behind TLS on 443).
 ## Scheduler (lifecycle cleanup)
 
 The `sessions:expire` command expires stale unfinished sessions and revokes their
-invite links (7-day rule). It's registered to run daily; production needs the
-Laravel scheduler ticking once a minute:
+invite links (7-day rule).
 
-```
-* * * * * cd /app && php artisan schedule:run >> /dev/null 2>&1
-```
-On Render, use a Cron Job service running `php artisan schedule:run`, or a
-dedicated worker running `php artisan schedule:work`.
+- **On Render (simplest):** a **Cron Job** service running `php artisan sessions:expire`
+  directly, scheduled daily.
+- **Generic host:** run the Laravel scheduler once a minute (it invokes the command
+  on its daily cadence, defined in `routes/console.php`):
+  ```
+  * * * * * cd /app && php artisan schedule:run >> /dev/null 2>&1
+  ```
 
 ## Post-deploy checklist
 
 - [ ] `php artisan db:show` connects to Neon.
-- [ ] `php artisan schedule:list` shows `sessions:expire`.
-- [ ] Reverb worker is up; a two-browser bid updates instantly.
+- [ ] `php artisan db:apply` reports the domain tables applied (or `--mark-only` run once on a pre-existing DB).
+- [ ] `php artisan schedule:list` shows `sessions:expire` (or a Render Cron Job runs it).
+- [ ] Reverb service is up; a two-browser bid updates instantly.
 - [ ] `APP_DEBUG=false`, caches built.
