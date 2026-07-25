@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+    /* Hide chrome and interactive controls when printing / saving as PDF. */
+    .no-print,
+    body > div > header {
+        display: none !important;
+    }
+
+    body {
+        background: #fff !important;
+    }
+}
