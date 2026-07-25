@@ -43,6 +43,11 @@ COPY docker/Caddyfile /etc/caddy/Caddyfile
 ENV PORT=8080
 EXPOSE 8080
 
+# Restricted runtimes (e.g. Render) refuse to exec a binary that carries file
+# capabilities. We bind to a high port ($PORT), so drop the caps from frankenphp
+# to avoid "exec: frankenphp: Operation not permitted" (exit 126).
+RUN setcap -r "$(command -v frankenphp)" 2>/dev/null || true
+
 # Default command = web server. The Reverb service overrides this with:
 #   php artisan reverb:start --host 0.0.0.0 --port $PORT
 CMD ["frankenphp", "run", "--config", "/etc/caddy/Caddyfile"]
