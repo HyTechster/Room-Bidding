@@ -5,7 +5,10 @@
 FROM node:20-slim AS assets
 WORKDIR /app
 COPY package.json package-lock.json vite.config.js tailwind.config.js postcss.config.js ./
-RUN npm ci
+# `npm install` (not `npm ci`) so platform-specific native binaries (Rolldown/Vite)
+# are resolved for the build platform — the lockfile was generated on another OS
+# and `npm ci` won't fetch cross-platform optional deps (npm bug #4828).
+RUN npm install --no-audit --no-fund
 COPY resources ./resources
 # VITE_REVERB_* are baked in at build time; pass them as build args in production.
 ARG VITE_REVERB_APP_KEY
