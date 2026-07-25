@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # ---- Stage 1: build front-end assets (Vite + Tailwind, incl. Echo) ----
-FROM node:20-alpine AS assets
+# glibc-based (not alpine/musl) to avoid Rollup/Vite native-binary issues.
+FROM node:20-slim AS assets
 WORKDIR /app
 COPY package.json package-lock.json vite.config.js tailwind.config.js postcss.config.js ./
 RUN npm ci
