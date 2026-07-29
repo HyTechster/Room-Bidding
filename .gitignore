@@ -48,5 +48,8 @@ clover.xml
 CLAUDE.md
 .claude
 
+# ---- Personal notes ----
+learn.md
+
 # ---- Scaffold artefacts ----
 .gitignore.pre-laravel

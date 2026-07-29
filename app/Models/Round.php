@@ -40,9 +40,4 @@ class Round extends Model
     {
         return $this->hasMany(RoomRoundState::class);
     }
-
-    public function selections(): HasMany
-    {
-        return $this->hasMany(Selection::class);
-    }
 }

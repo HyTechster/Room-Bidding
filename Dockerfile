@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# ---- Stage 1: build front-end assets (Vite + Tailwind, incl. Echo) ----
+# ---- Stage 1: build front-end assets (Vite + Tailwind) ----
 # glibc-based (not alpine/musl) to avoid Rollup/Vite native-binary issues.
 FROM node:20-slim AS assets
 WORKDIR /app
@@ -11,11 +11,6 @@ WORKDIR /app
 COPY package.json vite.config.js tailwind.config.js postcss.config.js ./
 RUN npm install --no-audit --no-fund
 COPY resources ./resources
-# VITE_REVERB_* are baked in at build time; pass them as build args in production.
-ARG VITE_REVERB_APP_KEY
-ARG VITE_REVERB_HOST
-ARG VITE_REVERB_PORT
-ARG VITE_REVERB_SCHEME
 RUN npm run build
 
 # ---- Stage 2: PHP runtime (FrankenPHP, production server) ----

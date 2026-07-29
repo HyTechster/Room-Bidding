@@ -48,6 +48,9 @@ Newest entries at the bottom of each section.
 | 2026-07-25 | **Resume works from persisted state; dashboard split Active / Completed** | All session state lives in the DB, so the host reopening the manage page continues exactly where they left off (verified mid-bidding), and members resume via their cookie. Dashboard lists active sessions (Resume) separately from ended/expired (View / Result). |
 | 2026-07-25 | **Hardening: rate limiting, accessibility, mobile, deployment doc** | Join action rate-limited per IP (20/min) + public join/result routes throttled (60/min). Colour is never the only signal — green/yellow/red always paired with icon + text; room cards expose `aria-pressed`/`aria-label`. Member bidding view widened on desktop. `docs/deployment.md` covers Render web + Reverb worker + Neon, schema apply order, `schedule:run` cron, and env. |
 | 2026-07-25 | **Render deploy: FrankenPHP `Dockerfile` + `db:apply` command** | Render has no native PHP → Docker image (FrankenPHP, a real server, not `artisan serve`). Domain SQL applied portably via `php artisan db:apply` (tracks applied files in `domain_migrations`; `--mark-only` reconciles a pre-existing DB) so no `psql` is needed in the container. Three Render services (web / reverb / cron) from one image; schema + caches run in the Pre-Deploy Command. |
+| 2026-07-25 | **Docker build gotchas fixed (Rolldown native binary, frankenphp caps)** | (1) Vite 8 uses Rolldown with per-OS native binaries; the Windows lockfile + npm #4828 broke the Linux build, so the Dockerfile does NOT copy `package-lock.json` and runs `npm install` to resolve for Linux. (2) Restricted runtimes refuse to exec a binary carrying file capabilities → `setcap -r` on the frankenphp binary (we bind a high `$PORT`). Both validated with a local `docker build` + run. |
+| 2026-07-25 | **Trust Render's proxy for correct HTTPS URLs** | Behind Render's TLS-terminating proxy, Laravel generated `http://` asset/URL links → CSS blocked as mixed content (page rendered unstyled). Fixed with `->withMiddleware(fn ($m) => $m->trustProxies(at: '*'))` in `bootstrap/app.php`, plus `APP_URL=https://…` on the web service. |
+| 2026-07-25 | **Cron job optional (proactive cleanup only)** | Expiry is enforced on access (`InviteLink::isUsable()` + the manage-page expiry check), so skipping the Render Cron Job doesn't break the 7-day rule — it only forgoes background `status='expired'` sweeping (a dashboard cosmetic). A free external cron can be added later if desired. |
 
 ## Pricing engine
 
@@ -56,6 +59,23 @@ Newest entries at the bottom of each section.
 | 2026-07-25 | **Two-layer model (weights → derived prices)** exactly per spec 3.5 | Budget balance (P1) and symmetry (P2) hold structurally. Implemented as a pure, framework-independent PHP module with tests before any UI (R10). |
 | 2026-07-25 | **Refinement over source table: same-colour transitions (red→red, yellow→yellow) keep earned damping `δ/2^f` instead of resetting to full offset** | Resetting to full offset mid-oscillation would undo damping and prevent convergence. Green is the ONLY thing that resets `f`. (Mandated by spec 3.5.4.) |
 | 2026-07-25 | **Money in integer minor units (sen); exact/high-precision arithmetic, never binary floats** | Correctness of settlement; largest-remainder rounding sums to exactly R. |
+
+## v2 pivot — single-operator tool (2026-07-27)
+
+Major direction change after v1 shipped. The app becomes a **single-operator** tool:
+one host runs the whole thing; there are no members joining live.
+
+| Date | Decision | Rationale |
+|---|---|---|
+| 2026-07-27 | **Stay on Laravel + Render Web Service + Neon** | Netlify can't run PHP/Docker (static + JS/Go functions only); the existing Docker deploy already works. Keep the stack. |
+| 2026-07-27 | **Remove payment entirely** | No per-session fee anymore. Deleted `PaymentService`, `Payment` model, `config/billing.php`, the pay gate, and End-Bid consumption. |
+| 2026-07-27 | **Remove Reverb / WebSockets** | Single operator → no realtime needed. Deleted `SessionPing`, Echo listeners, the `echo.js` import; broadcasting set to `log`. |
+| 2026-07-27 | **Remove invite links, lobby, member self-join, anonymity** | The host enters everyone; nobody joins separately, so none of these apply. Deleted `JoinSession`, `Lobby`, `BiddingRoom` (rebuilt as the new tool), the `join` route. |
+| 2026-07-27 | **Keep the pricing engine + multi-round mechanism (Option A)** | Rooms are only differentiated by the round-based weight evolution, so the mechanism stays. The host drives it via drag-and-drop and **advances rounds manually (a "Continue" button)** rather than auto-advancing. |
+| 2026-07-27 | **Optional auth: guests don't save, logged-in users save to Neon** | Tool is usable without an account (nothing persisted); logging in enables saving results, keeping multiple, and a "My results" history. |
+| 2026-07-29 | **v2 build: one public `RoomBiddingTool` Livewire component, in-memory** | Setup → drag-and-drop placement → manual **Continue** (advance round on red / settle on no red) → result. Runs entirely in memory (guests save nothing); calls the pure engine directly. Weights carried across rounds as exact fraction strings. |
+| 2026-07-29 | **Homepage + `/tool` public route; dashboard repurposed as "My results"** | Minimalist landing with a Launch button; the tool is public; the dashboard lists a logged-in user's saved results (each a permanent result page). |
+| 2026-07-29 | **P5 cleanup: removed v1-only code, tables, Reverb, cron** | Deleted `RoundService`, `SetupWizard`, `SessionManage`, `InviteLink`/`Selection` models, `ExpireSessions`; dropped tables `selections`/`invite_links`/`payments` and columns `anonymity`/`paid_at` (migration `003`); uninstalled `laravel/reverb`; broadcasting set to `log`. Deploy is now a single web service + Neon. |
 
 ## Open questions — resolutions (Part 4 + extra ambiguities)
 

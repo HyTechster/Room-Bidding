@@ -1,26 +1,19 @@
 <?php
 
-use App\Livewire\JoinSession;
 use App\Livewire\ResultPage;
-use App\Livewire\SessionManage;
-use App\Livewire\SetupWizard;
+use App\Livewire\RoomBiddingTool;
 use Illuminate\Support\Facades\Route;
 
 Route::view('/', 'welcome');
+
+// The tool is public — guests can use it (results just aren't saved).
+Route::get('tool', RoomBiddingTool::class)->name('tool');
 
 Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'verified'])
     ->name('dashboard');
 
-Route::middleware(['auth'])->group(function () {
-    Route::get('sessions/create', SetupWizard::class)->name('sessions.create');
-    Route::get('sessions/{session}/manage', SessionManage::class)->name('sessions.manage');
-});
-
-// Public member join — no account required.
-Route::get('join/{token}', JoinSession::class)->middleware('throttle:60,1')->name('join');
-
-// Public permanent result page (Q7) — survives invite-link expiry.
+// Public permanent result page — shareable, read-only.
 Route::get('result/{token}', ResultPage::class)->middleware('throttle:60,1')->name('result');
 
 Route::view('profile', 'profile')
