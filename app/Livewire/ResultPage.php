@@ -91,6 +91,7 @@ class ResultPage extends Component
             'roomTotals' => $roomTotals,
             'history'    => $history,
             'balanced'   => $total === (int) $session->total_rent_cents,
+            'symbol'     => \App\Support\Currency::symbol($session->currency),
         ]);
     }
 }

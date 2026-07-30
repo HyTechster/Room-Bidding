@@ -22,22 +22,22 @@
                 <div class="p-6 flex items-center justify-between border-b border-gray-100">
                     <span class="font-medium text-gray-900">Saved results</span>
                     <a href="{{ route('tool') }}"
-                       class="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700">New split</a>
+                       class="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700">New split</a>
                 </div>
 
                 @if ($results->isEmpty())
                     <div class="p-6 text-sm text-gray-500">
-                        No saved results yet. <a href="{{ route('tool') }}" class="text-indigo-600 hover:underline">Run a split</a> and save it to see it here.
+                        No saved results yet. <a href="{{ route('tool') }}" class="text-blue-600 hover:underline">Run a split</a> and save it to see it here.
                     </div>
                 @else
                     <ul class="divide-y divide-gray-100">
                         @foreach ($results as $s)
                             <li class="p-4 px-6 flex items-center justify-between">
                                 <div class="text-sm">
-                                    <span class="font-medium text-gray-800">RM {{ number_format($s->total_rent_cents / 100, 2) }}</span>
+                                    <span class="font-medium text-gray-800">{{ \App\Support\Currency::symbol($s->currency) }} {{ number_format($s->total_rent_cents / 100, 2) }}</span>
                                     <span class="text-gray-500">· {{ $s->num_tenants }} people · {{ $s->num_rooms }} rooms · {{ optional($s->ended_at)->format('d M Y, H:i') }}</span>
                                 </div>
-                                <a href="{{ route('result', $s->result_token) }}" target="_blank" class="text-sm text-indigo-600 hover:underline whitespace-nowrap">View result ↗</a>
+                                <a href="{{ route('result', $s->result_token) }}" target="_blank" class="text-sm text-blue-600 hover:underline whitespace-nowrap">View result ↗</a>
                             </li>
                         @endforeach
                     </ul>

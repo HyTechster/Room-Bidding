@@ -14,6 +14,7 @@ use App\Models\Round;
 use App\Models\RoomRoundState;
 use App\Models\Settlement as SettlementModel;
 use App\Models\SettlementLine;
+use App\Support\Currency;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -22,11 +23,12 @@ use Livewire\Component;
 
 /**
  * Single-operator room-bidding tool. Holds the whole session in-memory (public
- * props) and computes everything through the pure pricing engine — no database,
- * so guests can use it with nothing saved. Saving to Neon is layered on later.
+ * props) and computes everything through the pure pricing engine, so guests can
+ * use it with nothing saved. Saving to the database is layered on top.
  *
- * Weights are carried across rounds as exact fraction strings ("num/den") so they
- * survive Livewire's JSON round-trips without losing precision.
+ * Prices are frozen while people are being placed and only recalculated when the
+ * host presses Continue. Weights are carried across rounds as exact fraction
+ * strings ("num/den") so they survive Livewire's JSON round trips.
  */
 #[Layout('layouts.public')]
 class RoomBiddingTool extends Component
@@ -34,26 +36,32 @@ class RoomBiddingTool extends Component
     public string $step = 'setup';           // setup | bidding | result
 
     // ---- setup ----
-    public string $rent = '';                 // MYR
+    public string $rent = '';
+    public string $currency = 'MYR';
     public string $offset_unit = 'percentage';
     public string $offset_value = '10';
     /** @var array<int, array{label:?string, capacity:int}> */
     public array $rooms = [];
-    public string $namesText = '';            // one participant per line
+    public string $namesText = '';
 
     // ---- bidding state ----
-    public array $names = [];                 // parsed participant names
+    public array $names = [];
     public int $roundNo = 1;
     public array $weights = [];               // per room index: "num/den"
     public array $flips = [];                 // per room index: int
     public array $prevColours = [];           // per room index: 'green'|'yellow'|'red'
     public array $assignment = [];            // participant index => room index | null
+    public array $displayedPrices = [];       // per room index: frozen price in cents
+    public array $previousPrices = [];        // per room index: price shown before the last Next
+    public array $displayedColours = [];      // per room index: committed colour from the last Next
+    public bool $readyToSettle = false;       // last Next found no red room, so Finish is available
+    public ?int $selectedPi = null;           // tap-to-place selection
 
     // ---- result ----
-    public array $result = [];                // [['name','room','amount_cents','pi','room_index'], ...]
+    public array $result = [];
     public int $resultTotal = 0;
-    public array $history = [];               // per round: ['round_no', 'rooms' => [per room snapshot]]
-    public ?string $savedToken = null;        // set once persisted (logged-in users)
+    public array $history = [];
+    public ?string $savedToken = null;
 
     public function mount(): void
     {
@@ -63,6 +71,23 @@ class RoomBiddingTool extends Component
                 ['label' => null, 'capacity' => 2],
             ];
         }
+    }
+
+    // ---- helpers ----
+
+    public function money(int $cents): string
+    {
+        return Currency::format($cents, $this->currency);
+    }
+
+    public function currencyOptions(): array
+    {
+        return Currency::options();
+    }
+
+    private function rentCents(): int
+    {
+        return (int) round(((float) $this->rent) * 100);
     }
 
     // ---- setup actions ----
@@ -116,7 +141,9 @@ class RoomBiddingTool extends Component
         }
         if (! is_numeric($this->offset_value) || (float) $this->offset_value <= 0
             || ($this->offset_unit === 'percentage' && (float) $this->offset_value > 100)) {
-            $this->addError('offset_value', 'Enter a valid offset'.($this->offset_unit === 'percentage' ? ' (0–100%).' : '.'));
+            $this->addError('offset_value', $this->offset_unit === 'percentage'
+                ? 'Enter a percentage between 0 and 100.'
+                : 'Enter an offset amount greater than 0.');
         }
         if (count($this->rooms) < 1) {
             $this->addError('rooms', 'Add at least one room.');
@@ -136,31 +163,57 @@ class RoomBiddingTool extends Component
             return;
         }
 
-        // Initialise round 1.
+        $roomCount = count($this->rooms);
+        $baseline = intdiv($this->rentCents(), max(1, count($names)));
+
         $this->names = $names;
         $this->roundNo = 1;
-        $this->weights = array_fill(0, count($this->rooms), '1/1');
-        $this->flips = array_fill(0, count($this->rooms), 0);
-        $this->prevColours = array_fill(0, count($this->rooms), Colour::Green->value);
+        $this->weights = array_fill(0, $roomCount, '1/1');
+        $this->flips = array_fill(0, $roomCount, 0);
+        $this->prevColours = array_fill(0, $roomCount, Colour::Green->value);
         $this->assignment = array_fill(0, count($names), null);
+        $this->displayedPrices = array_fill(0, $roomCount, $baseline);
+        $this->previousPrices = [];
+        $this->displayedColours = array_fill(0, $roomCount, null);
+        $this->readyToSettle = false;
+        $this->selectedPi = null;
         $this->step = 'bidding';
     }
 
     // ---- bidding actions ----
 
-    /** Drag-drop assignment. $roomIndex null returns the person to the pool. */
+    /** Tap a name to select it (tap again to deselect). Works alongside drag. */
+    public function selectChip(int $pi): void
+    {
+        $this->selectedPi = ($this->selectedPi === $pi) ? null : $pi;
+    }
+
+    /** Tap a room: place the selected name there. */
+    public function tapRoom(int $roomIndex): void
+    {
+        if ($this->selectedPi !== null) {
+            $this->assign($this->selectedPi, $roomIndex);
+        }
+    }
+
+    /** Tap the unassigned area: return the selected name to it. */
+    public function tapPool(): void
+    {
+        if ($this->selectedPi !== null) {
+            $this->assign($this->selectedPi, null);
+        }
+    }
+
+    /** Drag-drop or tap assignment. $roomIndex null returns the person to the pool. */
     public function assign($participantIndex, $roomIndex = null): void
     {
         $pi = (int) $participantIndex;
-        if (! array_key_exists($pi, $this->assignment)) {
-            return;
+        if (array_key_exists($pi, $this->assignment)) {
+            $this->assignment[$pi] = ($roomIndex === null || $roomIndex === '') ? null : (int) $roomIndex;
         }
-        $this->assignment[$pi] = ($roomIndex === null || $roomIndex === '') ? null : (int) $roomIndex;
-    }
-
-    private function rentCents(): int
-    {
-        return (int) round(((float) $this->rent) * 100);
+        $this->selectedPi = null;
+        // Any move changes the placement, so the shown prices need a fresh Next.
+        $this->readyToSettle = false;
     }
 
     private function delta(): Rational
@@ -190,34 +243,85 @@ class RoomBiddingTool extends Component
         return array_map(fn ($w) => Rational::fromFractionString($w), $this->weights);
     }
 
-    /** Live per-room [colour, price_cents, occupancy], keyed by room index. */
+    /** Live occupancy and colour per room; price is the frozen displayed price. */
     public function roomData(): array
     {
         $occ = $this->occupancy();
-        $weights = $this->weightRationals();
-        $total = array_sum($occ);
         $out = [];
-
-        if ($total === 0) {
-            $baseline = count($this->names) > 0 ? intdiv($this->rentCents(), count($this->names)) : 0;
-            foreach ($this->rooms as $i => $room) {
-                $out[$i] = ['colour' => Colour::determine(0, (int) $room['capacity']), 'price_cents' => $baseline, 'occupancy' => 0];
-            }
-            return $out;
-        }
-
-        $prices = PricingEngine::derivePrices($this->rentCents(), $weights, $occ);
         foreach ($this->rooms as $i => $room) {
+            $w = Rational::fromFractionString($this->weights[$i] ?? '1/1');
+            $cmp = $w->compareTo(Rational::fromInt(1));
             $out[$i] = [
-                'colour'      => Colour::determine($occ[$i], (int) $room['capacity']),
-                'price_cents' => (int) $prices[$i]->roundHalfUpInt(),
-                'occupancy'   => $occ[$i],
+                'occupancy'       => $occ[$i],
+                'colour'          => Colour::determine($occ[$i], (int) $room['capacity']),
+                'price_cents'     => (int) ($this->displayedPrices[$i] ?? 0),
+                'previous_cents'  => array_key_exists($i, $this->previousPrices) ? (int) $this->previousPrices[$i] : null,
+                'committedColour' => $this->displayedColours[$i] ?? null,
+                'weightState'     => $cmp > 0 ? 'up' : ($cmp < 0 ? 'down' : 'same'),
             ];
         }
         return $out;
     }
 
+    /**
+     * "Next": recalculate the prices for the current placement. If a room is over
+     * capacity, weights evolve and the round advances. If no room is over capacity,
+     * the prices are refreshed and Finish becomes available. Nothing settles here,
+     * so the board always shows the prices that a Finish would charge.
+     */
     public function continueRound(): void
+    {
+        $this->resetErrorBag();
+
+        if (in_array(null, $this->assignment, true)) {
+            $this->addError('board', 'Place every participant in a room first.');
+            return;
+        }
+
+        // Whatever is currently shown becomes the "previous" price after this Next.
+        $this->previousPrices = $this->displayedPrices;
+
+        $occ = $this->occupancy();
+        $currColours = [];
+        foreach ($this->rooms as $i => $room) {
+            $currColours[$i] = Colour::determine($occ[$i], (int) $room['capacity']);
+        }
+        $anyRed = collect($currColours)->contains(fn ($c) => $c === Colour::Red);
+        $this->selectedPi = null;
+
+        if ($anyRed) {
+            // A round is committed: record it, evolve weights, then show new prices.
+            $pricesNow = PricingEngine::derivePrices($this->rentCents(), $this->weightRationals(), $occ);
+            $this->recordHistory($occ, $currColours, $pricesNow);
+
+            $prev = array_map(fn ($c) => Colour::from($c), $this->prevColours);
+            $update = PricingEngine::updateWeights($prev, $currColours, $this->weightRationals(), $this->flips, $this->delta());
+
+            $this->weights = array_map(fn (Rational $w) => $w->toFractionString(), $update['weights']);
+            $this->flips = $update['flips'];
+            $this->prevColours = array_map(fn (Colour $c) => $c->value, $currColours);
+            $this->roundNo++;
+            $this->readyToSettle = false;
+
+            $newPrices = PricingEngine::derivePrices($this->rentCents(), $update['weights'], $occ);
+            $this->displayedPrices = array_map(fn (Rational $p) => (int) $p->roundHalfUpInt(), $newPrices);
+            $this->displayedColours = array_map(fn (Colour $c) => $c->value, $currColours);
+
+            session()->flash('round_note', "Round {$this->roundNo}. Prices updated. Move people out of the over capacity rooms, then press Next again.");
+            return;
+        }
+
+        // No room over capacity: refresh the shown prices and enable Finish.
+        $pricesNow = PricingEngine::derivePrices($this->rentCents(), $this->weightRationals(), $occ);
+        $this->displayedPrices = array_map(fn (Rational $p) => (int) $p->roundHalfUpInt(), $pricesNow);
+        $this->displayedColours = array_map(fn (Colour $c) => $c->value, $currColours);
+        $this->readyToSettle = true;
+
+        session()->flash('round_note', 'Prices updated for this placement. Press Finish to see who pays, or keep rearranging.');
+    }
+
+    /** Settle using exactly the prices currently shown on the board. */
+    public function finish(): void
     {
         $this->resetErrorBag();
 
@@ -231,33 +335,32 @@ class RoomBiddingTool extends Component
         foreach ($this->rooms as $i => $room) {
             $currColours[$i] = Colour::determine($occ[$i], (int) $room['capacity']);
         }
-        $anyRed = collect($currColours)->contains(fn ($c) => $c === Colour::Red);
-
-        // Snapshot this round for the audit/history before mutating anything.
-        $this->recordHistory($occ, $currColours);
-
-        if (! $anyRed) {
-            $this->settle($occ);
+        if (collect($currColours)->contains(fn ($c) => $c === Colour::Red)) {
+            $this->addError('board', 'A room is over capacity. Move people out and press Next before finishing.');
             return;
         }
 
-        // Advance: evolve weights, keep people where they are, host rearranges.
-        $prev = array_map(fn ($c) => Colour::from($c), $this->prevColours);
-        $update = PricingEngine::updateWeights($prev, $currColours, $this->weightRationals(), $this->flips, $this->delta());
-
-        $this->weights = array_map(fn (Rational $w) => $w->toFractionString(), $update['weights']);
-        $this->flips = $update['flips'];
-        $this->prevColours = array_map(fn (Colour $c) => $c->value, $currColours);
-        $this->roundNo++;
-
-        session()->flash('round_note', "Round {$this->roundNo}: prices updated. Move people out of over-subscribed (red) rooms, then continue.");
+        $pricesNow = PricingEngine::derivePrices($this->rentCents(), $this->weightRationals(), $occ);
+        $this->recordHistory($occ, $currColours, $pricesNow);
+        $this->settle($occ, $pricesNow);
     }
 
-    private function settle(array $occ): void
+    private function recordHistory(array $occ, array $currColours, array $prices): void
     {
-        $prices = PricingEngine::derivePrices($this->rentCents(), $this->weightRationals(), $occ);
+        $rooms = [];
+        foreach ($this->rooms as $i => $room) {
+            $rooms[$i] = [
+                'occupancy'   => $occ[$i],
+                'colour'      => $currColours[$i]->value,
+                'price_cents' => (int) $prices[$i]->roundHalfUpInt(),
+                'weight_frac' => $this->weights[$i],
+            ];
+        }
+        $this->history[] = ['round_no' => $this->roundNo, 'rooms' => $rooms];
+    }
 
-        // Per-tenant amounts in stable order: room index, then participant index.
+    private function settle(array $occ, array $prices): void
+    {
         $rows = [];
         foreach ($this->assignment as $pi => $roomIndex) {
             $rows[] = ['pi' => $pi, 'room' => (int) $roomIndex];
@@ -281,27 +384,19 @@ class RoomBiddingTool extends Component
         $this->step = 'result';
     }
 
-    private function recordHistory(array $occ, array $currColours): void
+    public function backToSetup(): void
     {
-        $prices = array_sum($occ) > 0
-            ? PricingEngine::derivePrices($this->rentCents(), $this->weightRationals(), $occ)
-            : null;
+        $this->step = 'setup';
+    }
 
-        $rooms = [];
-        foreach ($this->rooms as $i => $room) {
-            $rooms[$i] = [
-                'occupancy'   => $occ[$i],
-                'colour'      => $currColours[$i]->value,
-                'price_cents' => $prices ? (int) $prices[$i]->roundHalfUpInt() : 0,
-                'weight_frac' => $this->weights[$i],
-            ];
-        }
-        $this->history[] = ['round_no' => $this->roundNo, 'rooms' => $rooms];
+    public function restart(): void
+    {
+        $this->reset(['names', 'roundNo', 'weights', 'flips', 'prevColours', 'assignment', 'displayedPrices', 'previousPrices', 'displayedColours', 'readyToSettle', 'selectedPi', 'result', 'resultTotal', 'history', 'savedToken']);
+        $this->step = 'setup';
     }
 
     /**
-     * Persist the finished result to Neon (logged-in users only). Creates the
-     * session, rooms, participants, round history and settlement so it appears in
+     * Persist the finished result (logged-in users only) so it appears in
      * "My results" and on the permanent result page.
      */
     public function saveResult(): void
@@ -324,7 +419,7 @@ class RoomBiddingTool extends Component
                 'offset_unit'        => $this->offset_unit,
                 'offset_percent'     => $this->offset_unit === 'percentage' ? (float) $this->offset_value : null,
                 'offset_fixed_cents' => $this->offset_unit === 'fixed' ? (int) round(((float) $this->offset_value) * 100) : null,
-                'currency'           => 'MYR',
+                'currency'           => $this->currency,
                 'total_capacity'     => $this->totalCapacity,
                 'scope'              => $this->scope ?? 'c_i',
                 'status'             => 'ended',
@@ -407,17 +502,6 @@ class RoomBiddingTool extends Component
         });
     }
 
-    public function backToSetup(): void
-    {
-        $this->step = 'setup';
-    }
-
-    public function restart(): void
-    {
-        $this->reset(['names', 'roundNo', 'weights', 'flips', 'prevColours', 'assignment', 'result', 'resultTotal', 'history', 'savedToken']);
-        $this->step = 'setup';
-    }
-
     public function render()
     {
         $unassigned = [];
@@ -435,14 +519,17 @@ class RoomBiddingTool extends Component
             $roomData = $this->roomData();
         }
 
+        $equalSplit = ($this->step === 'bidding' && count($this->names) > 0)
+            ? intdiv($this->rentCents(), count($this->names))
+            : 0;
+
         return view('livewire.room-bidding-tool', [
             'roomData'   => $roomData,
             'unassigned' => $unassigned,
             'byRoom'     => $byRoom,
             'allPlaced'  => $this->step === 'bidding' && ! in_array(null, $this->assignment, true),
-            'anyRedNow'  => $this->step === 'bidding'
-                ? collect($roomData)->contains(fn ($d) => $d['colour'] === Colour::Red)
-                : false,
+            'anyRedNow'  => collect($roomData)->contains(fn ($d) => $d['colour'] === Colour::Red),
+            'equalSplit' => $equalSplit,
         ]);
     }
 }
