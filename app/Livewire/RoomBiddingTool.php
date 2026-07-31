@@ -134,9 +134,18 @@ class RoomBiddingTool extends Component
     public function startBidding(): void
     {
         $this->resetErrorBag();
+
+        // Coerce dropdown/segmented values to known-safe options (defensive).
+        if (! array_key_exists($this->currency, Currency::MAP)) {
+            $this->currency = 'MYR';
+        }
+        if (! in_array($this->offset_unit, ['percentage', 'fixed'], true)) {
+            $this->offset_unit = 'percentage';
+        }
+
         $names = $this->parsedNames;
 
-        if (! is_numeric($this->rent) || (float) $this->rent <= 0) {
+        if (! is_numeric($this->rent) || (float) $this->rent <= 0 || (float) $this->rent > 100000000) {
             $this->addError('rent', 'Enter a total rent greater than 0.');
         }
         if (! is_numeric($this->offset_value) || (float) $this->offset_value <= 0
@@ -149,18 +158,26 @@ class RoomBiddingTool extends Component
             $this->addError('rooms', 'Add at least one room.');
         }
         foreach ($this->rooms as $i => $r) {
-            if ((int) ($r['capacity'] ?? 0) < 1) {
-                $this->addError("rooms.$i.capacity", 'Capacity must be at least 1.');
+            $cap = $r['capacity'] ?? '';
+            if (! is_numeric($cap) || (float) $cap != floor((float) $cap) || (int) $cap < 1 || (int) $cap > 1000) {
+                $this->addError("rooms.$i.capacity", 'Capacity must be a whole number of at least 1.');
             }
         }
         if (count($names) < 1) {
             $this->addError('namesText', 'Enter at least one participant.');
+        } elseif (count($names) > 500) {
+            $this->addError('namesText', 'That is a lot of people. Please keep it under 500.');
         } elseif ($this->scope === 'c_iii') {
             $this->addError('namesText', 'You have more people than total capacity. Add room capacity or remove people.');
         }
 
         if ($this->getErrorBag()->isNotEmpty()) {
             return;
+        }
+
+        // Normalise capacities to plain integers now that they are valid.
+        foreach ($this->rooms as $i => $r) {
+            $this->rooms[$i]['capacity'] = (int) $r['capacity'];
         }
 
         $roomCount = count($this->rooms);

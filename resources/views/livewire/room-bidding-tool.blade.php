@@ -87,7 +87,7 @@
                                            class="block w-full rounded-md border-gray-300 shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                                 </div>
                                 <div class="flex items-center gap-2">
-                                    <input wire:model.live="rooms.{{ $i }}.capacity" type="number" min="1" inputmode="numeric" title="Max occupants"
+                                    <input wire:model.live="rooms.{{ $i }}.capacity" type="number" min="1" max="1000" step="1" inputmode="numeric" title="Max occupants (whole number)"
                                            class="w-full sm:w-28 rounded-md border-gray-300 shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                                     @if (count($rooms) > 1)
                                         <button type="button" wire:click="removeRoom({{ $i }})" class="text-gray-400 hover:text-red-600 shrink-0 px-1" title="Remove room">✕</button>
