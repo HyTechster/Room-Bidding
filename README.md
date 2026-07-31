@@ -1,58 +1,114 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
-
 <p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
+  <img src="public/favicon.svg" width="88" alt="Room Bidding logo">
 </p>
 
-## About Laravel
+<h1 align="center">Room Bidding</h1>
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+<p align="center">Fair rent splitting for shared houses. Each room is priced by demand, and the amounts always add up to <strong>exactly</strong> the total rent.</p>
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+---
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## What it is
 
-## Learning Laravel
+Splitting rent equally isn't fair when rooms differ. **Room Bidding** runs a simple,
+demand-based mechanism: over-subscribed rooms get more expensive, quieter rooms get
+cheaper, round by round, until everyone fits. The result is a per-person breakdown
+that is transparent, printable, and provably sums to the rent.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+It's a **single-operator** tool: one person sets up the house, places everyone into
+rooms (tap or drag), and settles. No accounts are required to use it; signing in only
+adds the ability to **save** results and revisit them.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## How it works
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+1. **Set up** the total rent, the currency, the rooms and their capacities, and
+   everyone's name.
+2. **Place people** into rooms. Tap a name then a room, or drag on desktop.
+3. **Next** recalculates prices for the current placement. If a room is over
+   capacity, weights evolve and prices adjust. Repeat until no room is over capacity.
+4. **Finish** to see who pays what. Every per-person amount is exact and the total
+   matches the rent to the sen.
 
-## Agentic Development
+The pricing math is a two-layer model (desirability *weights* → derived *prices*)
+with two guarantees baked in structurally:
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+- **Budget balance:** the sum of all payments equals the rent exactly, every round.
+- **Symmetry:** a price increase and an equal decrease are exact mirror images.
+
+The engine uses exact rational arithmetic (no binary floats for money) and is covered
+by a thorough unit-test suite.
+
+## Features
+
+- Demand-based, multi-round room pricing with a manual **Next / Finish** flow
+- Live occupancy, colour status (full / space / over capacity), and per-room prices
+- Frozen prices while placing, recalculated only on **Next** (with previous-price and
+  "in demand / discount" explanations)
+- Currency selector (RM default, plus common currencies); percentage or fixed offset
+- Guest use with nothing saved; optional sign-in to **save results** and keep a history
+- Permanent, shareable **result pages** with a round-by-round audit and **print / PDF**
+- Mobile-friendly (tap-to-place), accessible status cues (icon + text, not colour only)
+
+## Tech stack
+
+- **Laravel** (PHP) + **Livewire** for a server-rendered, interactive UI
+- **Blade + Tailwind CSS** (Vite build)
+- **PostgreSQL** (hosted on **Neon**) for saved results; schema is hand-authored SQL in `db/`
+- A pure, framework-independent **pricing engine** in `app/Domain/Pricing`
+- **FrankenPHP** in Docker for production; deployed on **Render**
+
+## Getting started (local)
+
+Requirements: PHP 8.4 (with `pdo_pgsql`, `bcmath`, `mbstring`, …), Composer, Node 20+.
 
 ```bash
-composer require laravel/boost --dev
+composer install
+npm install && npm run build
 
-php artisan boost:install
+cp .env.example .env
+php artisan key:generate
+# point DB_* at your Postgres/Neon instance (or use sqlite for a quick spin)
+
+php artisan migrate            # framework tables
+php artisan db:apply           # domain tables (db/migrations/*.sql)
+
+php artisan serve              # http://127.0.0.1:8000
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Open the homepage and click **Launch the tool**. No login needed to run a split.
 
-## Contributing
+## Testing
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+The pricing engine is pure PHP and fully unit-tested:
 
-## Code of Conduct
+```bash
+php artisan test --testsuite=Unit --filter=Pricing
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Deployment
 
-## Security Vulnerabilities
+Ships as a Docker image (FrankenPHP) to a single Render **Web Service**, with **Neon**
+as the database. Domain SQL is applied by `php artisan db:apply` (tracked, safe to run
+on every deploy). Full steps, environment variables, and the pre-deploy command are in
+[`docs/deployment.md`](docs/deployment.md).
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## Project structure
+
+```
+app/Domain/Pricing/     the pure pricing engine (weights, colours, rounding)
+app/Livewire/           the tool, result page, dashboard (Livewire components)
+db/migrations/          hand-authored SQL — the source of truth for the schema
+docs/                   decisions log, spec, deployment notes
+design/                 design prompts and reference mockups
+tests/Unit/Pricing/     engine test suite
+```
+
+## Built on Laravel
+
+This project is a [Laravel](https://laravel.com) application. Laravel provides the
+routing, Eloquent models, Blade templating, and the Livewire/Vite tooling that the app
+is built on.
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+MIT.
